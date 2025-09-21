@@ -18,7 +18,8 @@ Path tracking in the **CARLA** simulator using **Pure Pursuit** for lateral cont
 - [Traffic‑sign–aware speed control](#traffic-signaware-speed-control)
 - [Data recording & plotting](#data-recording--plotting)
 - [Joystick teleop](#joystick-teleop)
-- [Configuration](#configuration)
+- [carla_object_detection module](#carla_object_detection-module)
+- [Configuration variables](#configuration-variables)
 - [Tips & troubleshooting](#tips--troubleshooting)
 - [License](#license)
 
@@ -49,8 +50,6 @@ carla_path_tracking/
 └─ carla_joy_teleop.py          # optional joystick teleoperation
 ```
 
-> If you rearrange files, update imports accordingly.
-
 ---
 
 ## Requirements
@@ -59,11 +58,6 @@ carla_path_tracking/
 - **Python** 3.8+
 - Common packages: `numpy`, `matplotlib`, `pandas`, `opencv-python` (for vision), `pygame` (for joystick), `scipy`
 - (Optional) CUDA/cuDNN if you use a DNN‑based detector in `carla_object_detection/`
-
-Install Python deps (edit as needed):
-```bash
-pip install numpy matplotlib pandas opencv-python pygame scipy
-```
 
 Set up CARLA env vars (example):
 ```bash
@@ -77,26 +71,23 @@ export PYTHONPATH=$PYTHONPATH:$CARLA_ROOT/PythonAPI/carla/dist/carla-*-py3.*.egg
 
 1) **Launch CARLA** (server):
 ```bash
-# In CARLA root
 ./CarlaUE4.sh -quality-level=Low -prefernvidia
-# or on Windows: CarlaUE4.exe -quality-level=Low -prefernvidia
 ```
 
 2) **Drive & record a path** (creates a CSV in `waypoints/`):
 ```bash
-python3 record_ego_path.py --out waypoints/track.csv --duration 120
+python3 record_ego_path.py
 ```
 
 3) **Run controller (pure pursuit + PID)** on recorded waypoints:
 ```bash
-python3 control_with_vision.py --waypoints waypoints/track.csv
-# add --visualize to show live plots, and --no-vision to disable sign detection
+python3 control_with_vision.py
 ```
 
 4) **Inspect results**:
 ```bash
-python3 plot_ego-path.py --log runs/run_2025-09-21.csv
-python3 compare_plots.py --logs runs/run_*.csv
+python3 plot_ego-path.py
+python3 compare_plots.py
 ```
 
 ---
@@ -105,38 +96,34 @@ python3 compare_plots.py --logs runs/run_*.csv
 
 ### Pure Pursuit (lateral)
 
-Given a look‑ahead distance \(L_d\) and wheelbase \(L\), steering command \(\delta\) is computed from the curvature to the goal point \(G\) on the path. Typical tunables: base look‑ahead, speed‑scaled look‑ahead, and min/max caps.
+Given a look‑ahead distance \(L_d\) and wheelbase \(L\), steering command \(\delta\) is computed from the curvature to the goal point \(G\) on the path.
 
-Key parameters (in code / CLI):
-- `--lookahead`: base look‑ahead distance [m]
-- `--k_lookahead`: scale factor w.r.t. speed
-- `--wheelbase`: vehicle wheelbase [m]
-- `--max_steer`: steering saturation [deg or rad]
+Key variables inside `control_with_vision.py`:
+- `LOOKAHEAD_DIST`: base look‑ahead distance [m]
+- `K_LOOKAHEAD`: scale factor w.r.t. speed
+- `WHEELBASE`: vehicle wheelbase [m]
+- `MAX_STEER`: steering saturation [deg or rad]
 
 ### PID (longitudinal)
 
-A standard PID tracks the desired speed \(v_d\). Typical tunables: \(K_p\), \(K_i\), \(K_d\), integral windup guard, and output saturation for throttle/brake.
+A standard PID tracks the desired speed \(v_d\). Typical tunables include proportional, integral, derivative gains, integral guard, and output saturation.
 
-Key parameters:
-- `--kp`, `--ki`, `--kd`
-- `--throttle_max`, `--brake_max`
-- `--int_guard`
-
-You can start from conservative values (e.g., `kp=0.2, ki=0.05, kd=0.0`) and use `compare_plots.py` to evaluate overshoot and settling time.
+Key variables inside `pid.py`:
+- `KP`, `KI`, `KD`
+- `THROTTLE_MAX`, `BRAKE_MAX`
+- `INTEGRAL_GUARD`
 
 ---
 
 ## Traffic‑sign–aware speed control
 
-`control_with_vision.py` integrates a detector from `carla_object_detection/` to read **speed‑limit** or **stop** signs and adjust the target speed passed to the PID. The loop is:
+`control_with_vision.py` integrates detection from `carla_object_detection/` to read **speed‑limit** or **stop** signs and adjust the target speed passed to the PID. The loop is:
 
 1. Read current waypoint target speed.
 2. Detect traffic signs in the camera frame.
 3. If a sign is found (e.g., 30/50/80 km/h), override/limit `v_d` for a configured horizon.
 4. Feed `v_d` into PID; feed position to Pure Pursuit.
 5. Apply control via CARLA’s vehicle API.
-
-You can disable this layer with `--no-vision` to benchmark pure controller behavior.
 
 ---
 
@@ -155,21 +142,32 @@ All logs are CSV for easy analysis in pandas/NumPy.
 `carla_joy_teleop.py` maps a gamepad to throttle/brake/steer so you can:
 - Drive to **record** initial waypoints.
 - Take **manual control** if the detector or controller misbehaves.
-Use `--device` and axis/button mappings if needed.
 
 ---
 
-## Configuration
+## carla_object_detection module
 
-Common CLI args (check `--help` on each script):
+The `carla_object_detection/` folder contains helpers to process camera images and detect traffic signs or objects in the CARLA world. Typical components include:
 
-- **Waypoints**: `--waypoints waypoints/track.csv`
-- **Lateral**: `--lookahead`, `--k_lookahead`, `--wheelbase`, `--max_steer`
-- **Longitudinal**: `--kp --ki --kd`, `--throttle_max`, `--brake_max`
-- **Vision**: `--no-vision` or detector options (model path, confidence, class IDs)
-- **Logging**: `--logdir runs/`
+- **Model loading**: pretrained detectors for traffic signs (e.g., YOLO/SSD or classical OpenCV approaches).  
+- **Image preprocessing**: resizing, color conversions, ROI cropping.  
+- **Detection output**: bounding boxes and class IDs for speed signs, stop signs, etc.  
+- **Integration hooks**: functions that `control_with_vision.py` calls to get the currently detected speed limit or stop condition.
 
-You can also hardcode defaults at the top of each script (e.g., in `pid.py`).
+These detections directly affect the **desired speed variable** before PID control. You can extend this module with your own detectors, different sign classes, or fuse detections with map priors.
+
+---
+
+## Configuration variables
+
+Instead of CLI flags, this repo sets configuration via Python variables/constants inside the scripts. Examples:
+
+- In **`pid.py`**: gains (`KP`, `KI`, `KD`), limits (`THROTTLE_MAX`, `BRAKE_MAX`).  
+- In **`control_with_vision.py`**: look‑ahead distance (`LOOKAHEAD_DIST`), wheelbase (`WHEELBASE`), enable/disable vision integration (`USE_VISION = True/False`).  
+- In **`record_ego_path.py`**: duration of logging, output file path.  
+- In **plotting scripts**: log file paths, output directory, figure options.  
+
+Adjust these variables directly in the source code or centralize them into a config file for cleaner experiments.
 
 ---
 
